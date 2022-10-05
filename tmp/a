@@ -1,0 +1,170 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.4;
+
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import "@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
+import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
+import "hardhat/console.sol";
+
+contract LiveTradeINO is Ownable, ReentrancyGuard {
+    using SafeMath for uint256;
+
+    address public addressPaymentToken;
+    address public devWallet;
+    address public addressNftClaim;
+    address public addressStakingToken;
+    uint256 public priceNft;
+    uint256 public startTimeLock;
+    uint256 public endTimeLock;
+    uint256 public totalNftSupply;
+    uint256 public amountStakingFCFS;
+
+    //mapping
+    mapping(address => uint256) public amountNftClaimMap;
+    mapping(address => bool) public userStakeMap;
+    mapping(address => uint256) public userStakeNftIndexMap;
+    mapping(address => bool) public userFCFSMap;
+    mapping(address => bool) public userMembershipMap;
+    mapping(address => bool) public userRegisBuyMap;
+    mapping(address => uint256) public amountRegisBuyMap;
+
+    constructor()
+    {
+
+    }
+
+    struct LevelBuyNft {
+        uint256 levelIndex;
+        uint256 amountClaimNft;
+        address addressNftStake;
+    }
+
+    LevelBuyNft[] public listLevelBuyNft;
+
+    function setupAddress(address _addressStakingToken, address _addressPaymentToken, address _addressNftClaim, address _devWallet) public onlyOwner {
+        addressPaymentToken = _addressPaymentToken;
+        devWallet = _devWallet;
+        addressNftClaim = _addressNftClaim;
+        addressStakingToken = _addressStakingToken;
+    }
+
+    function setPriceNft(uint256 _priceNft) public onlyOwner {
+        priceNft = _priceNft;
+    }
+
+    function setLevelStake(uint256[] calldata _maxAmountBuyNft, address[] calldata _addressNftStake) public onlyOwner {
+        delete listLevelBuyNft;
+        LevelBuyNft memory levelBuyNft;
+        for(uint256 index = 0; index < _maxAmountBuyNft.length; index++)
+        {
+            levelBuyNft.levelIndex;
+            levelBuyNft.amountClaimNft =  _maxAmountBuyNft[index];
+            levelBuyNft.addressNftStake = _addressNftStake[index];
+            listLevelBuyNft.push(levelBuyNft);
+        }
+    }
+
+    function setUpINO(uint256 _startTimeLock, uint256 _endTimeLock, uint256 _amountStakingFCFS, uint256 _priceNft) public onlyOwner
+    {
+        startTimeLock = _startTimeLock;
+        endTimeLock = _endTimeLock;
+        amountStakingFCFS = _amountStakingFCFS;
+        priceNft = _priceNft;
+        totalNftSupply = ERC721(addressNftClaim).balanceOf(address(this));
+    }
+
+    function setTimeINO(uint256 _startTimeLock, uint256 _endTimeLock) public onlyOwner
+    {
+        startTimeLock = _startTimeLock;
+        endTimeLock = _endTimeLock;
+    }
+
+    function registerBuyForFCFS() public{
+        totalNftSupply--;
+        require(totalNftSupply > 0, "Not enought balance to buy");
+        require(userFCFSMap[msg.sender] == false, "You have staking as FCFS");
+        require(userMembershipMap[msg.sender] == false, "You have staking as membership");
+        ERC20(addressStakingToken).transferFrom(msg.sender, address(this), amountStakingFCFS);
+        userFCFSMap[msg.sender] = true;
+        userRegisBuyMap[msg.sender] = true;
+    }
+
+    function registerBuyForMembership(uint256 _levelIndex) public {
+        require(userFCFSMap[msg.sender] == false, "You have staking as FCFS");
+        require(userMembershipMap[msg.sender] == false, "You have staking as membership");
+        LevelBuyNft storage levelBuyNft = listLevelBuyNft[_levelIndex];
+        uint256 amountNftRegisBuy = levelBuyNft.amountClaimNft;
+        address addressNftStake = levelBuyNft.addressNftStake;
+        totalNftSupply -= amountNftRegisBuy;
+
+        require(totalNftSupply > 0, "Not enought balance to buy");
+
+        uint256 idNFTStake = ERC721Enumerable(addressNftStake).tokenOfOwnerByIndex(msg.sender, 0);
+        ERC721(addressNftStake).safeTransferFrom(msg.sender, address(this), idNFTStake);
+
+        amountNftClaimMap[msg.sender] = amountNftRegisBuy;
+        userStakeNftIndexMap[msg.sender] = _levelIndex;
+        if(_levelIndex == 0)
+        {
+            userFCFSMap[msg.sender] = true;
+        }
+        else
+        {
+            userMembershipMap[msg.sender] = true;
+        }
+        amountRegisBuyMap[msg.sender] = levelBuyNft.amountClaimNft;
+        userRegisBuyMap[msg.sender] = true;
+    }
+    
+    function buyNftOfFCFS() public nonReentrant {
+        require(block.timestamp > endTimeLock, "In time lock");
+        require(userRegisBuyMap[msg.sender] == true, "You must regis buy first");
+        require(userFCFSMap[msg.sender] == true, "You are Membership");
+
+        ERC20(addressPaymentToken).transferFrom(msg.sender, devWallet, priceNft);
+        uint256 idNFTOfFCFS = ERC721Enumerable(addressNftClaim).tokenOfOwnerByIndex(address(this), 0);
+        ERC721(addressNftClaim).safeTransferFrom(address(this), msg.sender, idNFTOfFCFS);      
+    }
+
+    function buyNftOfMembership(uint256 _amountNftToBuy) public {
+        require(block.timestamp > endTimeLock, "In time lock");
+        require(userRegisBuyMap[msg.sender] == true, "You must regis buy first");
+        require(_amountNftToBuy <= amountRegisBuyMap[msg.sender], "Expected quantity exceeds max NFT");
+        require(userMembershipMap[msg.sender] == true, "You are FCFS");
+
+        uint256 totalPriceNft = _amountNftToBuy.mul(priceNft);
+        ERC20(addressPaymentToken).transferFrom(msg.sender, devWallet, totalPriceNft);
+        for(uint256 index = 0; index < _amountNftToBuy; index++)
+        {
+            uint256 idNFTOfWhitelist = ERC721Enumerable(addressNftClaim).tokenOfOwnerByIndex(address(this), 0);
+            ERC721(addressNftClaim).safeTransferFrom(address(this), msg.sender, idNFTOfWhitelist);
+        }
+        amountRegisBuyMap[msg.sender] -= _amountNftToBuy;
+    }
+
+    function withDrawNftForUser() public nonReentrant {
+        LevelBuyNft storage levelBuyNft = listLevelBuyNft[userStakeNftIndexMap[msg.sender]];
+        address addressNftStake = levelBuyNft.addressNftStake;
+
+        uint256 idNFTStake = ERC721Enumerable(addressNftStake).tokenOfOwnerByIndex(address(this), 0);
+        ERC721(addressNftStake).safeTransferFrom(address(this), msg.sender, idNFTStake);
+    }
+
+    function withDrawNftForOwner() public onlyOwner {
+        uint256 amountWithDraw = ERC721(addressNftClaim).balanceOf(address(this));
+        console.log("amountWithDraw", amountWithDraw);
+        for(uint256 index = 0; index < amountWithDraw; index++)
+        {
+            uint256 idNFTWithDraw = ERC721Enumerable(addressNftClaim).tokenOfOwnerByIndex(address(this), 0);
+            ERC721(addressNftClaim).safeTransferFrom(address(this), msg.sender, idNFTWithDraw);
+        }
+    }
+
+    function onERC721Received(address, address, uint256, bytes memory) public virtual returns (bytes4) {
+        return this.onERC721Received.selector;
+    }
+}
